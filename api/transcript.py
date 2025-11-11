@@ -318,6 +318,10 @@ def transcript_root():
 def health():
     return ('ok', 200)
 
+@app.route('/api/transcript/health', methods=['GET'])
+def health_alias():
+    return ('ok', 200)
+
 
 if __name__ == '__main__':
     # Run local server on the same port the frontend expects by default
