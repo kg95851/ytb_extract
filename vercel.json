@@ -2,8 +2,10 @@
   "builds": [
     { "src": "api/**/*.py", "use": "@vercel/python" }
   ],
-  "rewrites": [
-    { "source": "/", "destination": "/index.html" }
+  "routes": [
+    { "src": "/api/transcript", "dest": "/api/transcript.py" },
+    { "src": "/api/transcript/(.*)", "dest": "/api/transcript.py" },
+    { "src": "/", "dest": "/index.html" }
   ]
 }
 
