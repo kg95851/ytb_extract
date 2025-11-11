@@ -1,11 +1,7 @@
 {
-  "functions": {
-    "api/**/*.py": {
-      "maxDuration": 60,
-      "memory": 512,
-      "runtime": "python3.11"
-    }
-  },
+  "builds": [
+    { "src": "api/**/*.py", "use": "@vercel/python" }
+  ],
   "rewrites": [
     { "source": "/", "destination": "/index.html" }
   ]
