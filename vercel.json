@@ -3,6 +3,7 @@
     { "src": "api/**/*.py", "use": "@vercel/python" }
   ],
   "routes": [
+    { "src": "/channel_extract.html", "dest": "/index.html" },
     { "src": "/api/transcript", "dest": "/api/transcript.py" },
     { "src": "/api/transcript/(.*)", "dest": "/api/transcript.py" },
     { "src": "/", "dest": "/index.html" }
