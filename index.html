@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>채널 전체 대본 추출 (독립 페이지)</title>
+    <link rel="stylesheet" href="./style.css">
+    <style>
+      /* 이 페이지 전용 보조 스타일 (기존 스타일과 충돌 없음) */
+      .container { max-width: 1080px; margin: 24px auto; padding: 0 16px; }
+      .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .row-3 { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 12px; }
+      .label { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; display: block; }
+      .input, .textarea, .select { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); color: var(--text-primary); }
+      .textarea { min-height: 100px; resize: vertical; }
+      .btn { padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); color: var(--text-primary); cursor: pointer; }
+      .btn-primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+      .btn-danger { background: #ef4444; color: #fff; border-color: #ef4444; }
+      .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+      .flex { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .muted { color: var(--text-secondary); font-size: 12px; }
+      .badge { display: inline-block; background: #111827; color: #e5e7eb; border: 1px solid #374151; border-radius: 999px; padding: 2px 8px; font-size: 12px; }
+      .progress-wrap { margin-top: 8px; height: 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+      .progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg, #34d399, #10b981); transition: width 0.2s ease; }
+      .log { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; white-space: pre-wrap; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); padding: 10px; height: 220px; overflow: auto; }
+      .hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="card" style="display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <h2 style="margin:0;">채널 전체 대본 추출</h2>
+          <div class="muted">YouTube API 키 회전 + 서버(IP 회전 구성 시 자동 연동)</div>
+        </div>
+        <div class="flex">
+          <a class="btn" href="./index.html">홈</a>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row">
+          <div>
+            <label class="label">채널 URL 또는 ID 또는 @handle</label>
+            <input id="ch-input" class="input" placeholder="예: https://www.youtube.com/@zxc 혹은 UCxxxx 혹은 @handle">
+          </div>
+          <div>
+            <label class="label">Transcript 서버 주소</label>
+            <input id="srv-input" class="input" placeholder="예: /api (기본)" />
+            <div class="muted" style="margin-top:6px;">/api/transcript 로 호출됩니다. 로컬 서버 사용 시 http://localhost:8787</div>
+          </div>
+        </div>
+        <div style="margin-top:12px;">
+          <label class="label">YouTube API Keys (줄바꿈으로 여러 개)</label>
+          <textarea id="keys-input" class="textarea" placeholder="AIza...1&#10;AIza...2"></textarea>
+          <div class="flex" style="margin-top:8px;">
+            <button id="save-keys" class="btn">키 저장</button>
+            <button id="test-key" class="btn">테스트</button>
+            <span id="keys-status" class="muted"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row-3">
+          <div>
+            <label class="label">최대 수집 개수 (빈칸=제한없음)</label>
+            <input id="max-videos" type="number" class="input" placeholder="예: 100">
+          </div>
+          <div>
+            <label class="label">동시성 (대본 추출)</label>
+            <input id="conc-input" type="number" class="input" value="8" min="1" max="20">
+          </div>
+          <div>
+            <label class="label">STT Fallback 사용</label>
+            <select id="stt-input" class="select">
+              <option value="0">사용 안 함</option>
+              <option value="1">사용</option>
+            </select>
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px;">
+          <div>
+            <label class="label">게시일 기준 (이 날짜 이후만)</label>
+            <input id="after-date" type="date" class="input">
+          </div>
+          <div class="flex" style="align-items:flex-end; gap:8px;">
+            <button id="resolve-ch" class="btn">채널 확인</button>
+            <button id="list-videos" class="btn">영상 목록 불러오기</button>
+            <button id="start" class="btn btn-primary">대본 추출 시작</button>
+            <button id="stop" class="btn btn-danger">중단</button>
+            <button id="export" class="btn">JSON 내보내기</button>
+            <button id="export-pdf" class="btn">PDF 내보내기</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="status-card" class="card">
+        <div class="flex" style="justify-content:space-between;">
+          <div>
+            <div id="status-line" class="badge">대기 중</div>
+            <div id="sub-status" class="muted" style="margin-top:6px;"></div>
+          </div>
+          <div class="muted"><span id="counts-line">0 / 0</span></div>
+        </div>
+        <div class="progress-wrap"><div id="progress-bar" class="progress-bar"></div></div>
+        <div id="log" class="log" style="margin-top:10px;"></div>
+      </div>
+
+      <div class="card">
+        <div class="muted">
+          - 이 페이지는 관리자와 독립적으로 동작합니다.<br>
+          - YouTube API는 키 회전으로 사용합니다. Transcript 서버는 환경설정에 따라 프록시(IP 회전)로 동작합니다.<br>
+          - JSON 내보내기는 브라우저로 저장됩니다.
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./channel_extract.js"></script>
+  </body>
+  </html>
+
+
