@@ -13,9 +13,8 @@ const keysStatus = document.getElementById('keys-status');
 const maxVideosInput = document.getElementById('max-videos');
 const concInput = document.getElementById('conc-input');
 const sttInput = document.getElementById('stt-input');
-const afterDateInput = document.getElementById('after-date');
-const beforeDateInput = document.getElementById('before-date');
 const minViewsInput = document.getElementById('min-views');
+const dateRangeInput = document.getElementById('date-range');
 const btnResolve = document.getElementById('resolve-ch');
 const btnList = document.getElementById('list-videos');
 const btnStart = document.getElementById('start');
@@ -38,6 +37,8 @@ let RESOLVED_CHANNEL = null; // { id, title }
 let STARTED_AT = 0;
 let SUCC = 0;
 let FAIL = 0;
+let SELECTED_AFTER = '';
+let SELECTED_BEFORE = '';
 
 function safeDecode(s) {
   try {
@@ -45,6 +46,13 @@ function safeDecode(s) {
   } catch {
     return String(s || '');
   }
+}
+
+function fmtYMD(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const da = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${da}`;
 }
 
 function log(line) {
@@ -385,8 +393,8 @@ btnList?.addEventListener('click', async () => {
       RESOLVED_CHANNEL = await resolveChannel(ALL_KEYS, chInput.value);
     }
     const maxCount = Math.max(0, Number(maxVideosInput.value || 0)) || undefined;
-    const after = (afterDateInput.value || '').trim() || undefined;
-    const before = (beforeDateInput?.value || '').trim() || undefined;
+    const after = (SELECTED_AFTER || '').trim() || undefined;
+    const before = (SELECTED_BEFORE || '').trim() || undefined;
     const minViews = Math.max(0, Number(minViewsInput?.value || 0)) || undefined;
     VIDEOS = await listChannelVideos(ALL_KEYS, RESOLVED_CHANNEL.id, { maxCount, publishedAfter: after, publishedBefore: before, minViews });
     setStatus('영상 목록 완료', `${VIDEOS.length}개${minViews ? ' (필터 적용)' : ''}`);
@@ -528,6 +536,20 @@ window.addEventListener('DOMContentLoaded', () => {
   loadLocal();
   setStatus('대기 중', '채널/키를 입력하세요.');
   setProgress(0, 0);
+  // date range picker init (optional)
+  try {
+    if (window.flatpickr && dateRangeInput) {
+      const fp = window.flatpickr(dateRangeInput, {
+        mode: 'range',
+        dateFormat: 'Y-m-d',
+        onChange: (selectedDates) => {
+          SELECTED_AFTER = (selectedDates && selectedDates.length > 0) ? fmtYMD(selectedDates[0]) : '';
+          SELECTED_BEFORE = (selectedDates && selectedDates.length > 1) ? fmtYMD(selectedDates[1]) : '';
+        }
+      });
+      // no preload needed (inputs removed)
+    }
+  } catch {}
 });
 
 
