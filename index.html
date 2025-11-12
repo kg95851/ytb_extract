@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>채널 전체 대본 추출 (독립 페이지)</title>
     <link rel="stylesheet" href="./style.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
     <style>
       /* 이 페이지 전용 보조 스타일 (기존 스타일과 충돌 없음) */
       .container { max-width: 1080px; margin: 24px auto; padding: 0 16px; }
@@ -80,19 +81,19 @@
             </select>
           </div>
         </div>
-        <div class="row-3" style="margin-top:12px;">
+        <div class="row" style="margin-top:12px;">
           <div>
-            <label class="label">게시일 기준 (이 날짜 이후만)</label>
-            <input id="after-date" type="date" class="input">
+            <label class="label">기간(캘린더 선택)</label>
+            <input id="date-range" class="input" placeholder="YYYY-MM-DD ~ YYYY-MM-DD">
           </div>
-          <div>
-            <label class="label">게시일 기준 (이 날짜 이전만)</label>
-            <input id="before-date" type="date" class="input">
-          </div>
+          <div></div>
+        </div>
+        <div class="row" style="margin-top:12px;">
           <div>
             <label class="label">최소 조회수</label>
             <input id="min-views" type="number" class="input" placeholder="예: 30000" min="0">
           </div>
+          <div></div>
         </div>
         <div class="row" style="margin-top:12px;">
           <div class="flex" style="align-items:flex-end; gap:8px;">
@@ -127,6 +128,7 @@
       </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <script type="module" src="./channel_extract.js"></script>
   </body>
   </html>
