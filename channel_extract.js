@@ -21,6 +21,7 @@ const btnStart = document.getElementById('start');
 const btnStop = document.getElementById('stop');
 const btnExport = document.getElementById('export');
 const btnExportPdf = document.getElementById('export-pdf');
+const btnExportPdfSplit = document.getElementById('export-pdf-split');
 const statusLine = document.getElementById('status-line');
 const subStatus = document.getElementById('sub-status');
 const countsLine = document.getElementById('counts-line');
@@ -570,6 +571,42 @@ btnExportPdf?.addEventListener('click', () => {
   try { w.focus(); } catch {}
   // 일부 브라우저는 load 후 호출해야 함
   w.onload = () => { try { w.print(); } catch {} };
+});
+
+async function exportPdfPerChannel() {
+  if (!RESULTS.length) { alert('내보낼 데이터가 없습니다.'); return; }
+  const channels = Array.isArray(RESOLVED_CHANNELS) && RESOLVED_CHANNELS.length ? RESOLVED_CHANNELS : (RESOLVED_CHANNEL ? [RESOLVED_CHANNEL] : []);
+  if (!channels.length) { alert('채널이 확인되지 않았습니다. 먼저 채널 확인을 실행하세요.'); return; }
+  let opened = 0;
+  for (const ch of channels) {
+    if (ABORT) break;
+    const list = RESULTS.filter(r => r.channelId === ch.id);
+    if (!list.length) continue;
+    const html = buildPrintableHtml(ch, list);
+    const w = window.open('', '_blank');
+    if (!w) { 
+      alert('팝업이 차단되었습니다. 팝업 허용 후 다시 시도하세요.');
+      return;
+    }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+    try { w.focus(); } catch {}
+    w.onload = () => { try { w.print(); } catch {} };
+    opened++;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  if (!opened) {
+    alert('채널별 데이터가 없습니다. 먼저 영상 목록/대본 추출을 진행하세요.');
+  }
+}
+
+btnExportPdfSplit?.addEventListener('click', async () => {
+  try {
+    await exportPdfPerChannel();
+  } catch (e) {
+    alert('채널별 PDF 내보내기 실패: ' + (e?.message || e));
+  }
 });
 
 // init
