@@ -1,13 +1,10 @@
 {
+  "version": 2,
   "builds": [
     { "src": "api/**/*.py", "use": "@vercel/python" }
   ],
   "routes": [
-    { "src": "/channel_extract.html", "dest": "/index.html" },
-    { "src": "/api/transcript", "dest": "/api/transcript.py" },
-    { "src": "/api/transcript/(.*)", "dest": "/api/transcript.py" },
-    { "src": "/", "dest": "/index.html" }
+    { "src": "/api/(.*)", "dest": "/api/$1.py" },
+    { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
-
-
