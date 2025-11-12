@@ -14,6 +14,8 @@ const maxVideosInput = document.getElementById('max-videos');
 const concInput = document.getElementById('conc-input');
 const sttInput = document.getElementById('stt-input');
 const afterDateInput = document.getElementById('after-date');
+const beforeDateInput = document.getElementById('before-date');
+const minViewsInput = document.getElementById('min-views');
 const btnResolve = document.getElementById('resolve-ch');
 const btnList = document.getElementById('list-videos');
 const btnStart = document.getElementById('start');
@@ -29,7 +31,7 @@ const logEl = document.getElementById('log');
 // State
 let ALL_KEYS = [];
 let KEY_INDEX = 0;
-let VIDEOS = []; // { id, title, publishedAt, url }
+let VIDEOS = []; // { id, title, publishedAt, url, views }
 let RESULTS = []; // { id, title, publishedAt, transcript, error }
 let ABORT = false;
 let RESOLVED_CHANNEL = null; // { id, title }
@@ -182,8 +184,8 @@ async function resolveChannel(keys, inputRaw) {
   throw new Error('채널 해석 실패');
 }
 
-async function listChannelVideos(keys, channelId, { maxCount, publishedAfter } = {}) {
-  const out = [];
+async function listChannelVideos(keys, channelId, { maxCount, publishedAfter, publishedBefore, minViews } = {}) {
+  const all = [];
   let pageToken = '';
   while (true) {
     if (ABORT) break;
@@ -196,7 +198,8 @@ async function listChannelVideos(keys, channelId, { maxCount, publishedAfter } =
       maxResults: 50,
       key,
       pageToken,
-      publishedAfter: publishedAfter ? new Date(publishedAfter).toISOString() : undefined
+      publishedAfter: publishedAfter ? new Date(publishedAfter).toISOString() : undefined,
+      publishedBefore: publishedBefore ? new Date(publishedBefore).toISOString() : undefined
     });
     try {
       const j = await ytFetch(url);
@@ -204,15 +207,15 @@ async function listChannelVideos(keys, channelId, { maxCount, publishedAfter } =
       for (const it of items) {
         const id = it.id?.videoId;
         if (!id) continue;
-        out.push({
+        all.push({
           id,
           title: it.snippet?.title || '',
           publishedAt: it.snippet?.publishedAt || '',
           url: `https://www.youtube.com/watch?v=${id}`
         });
-        if (maxCount && out.length >= maxCount) break;
+        if (maxCount && all.length >= maxCount) break;
       }
-      if (maxCount && out.length >= maxCount) break;
+      if (maxCount && all.length >= maxCount) break;
       pageToken = j.nextPageToken || '';
       if (!pageToken) break;
       // QPS 완화
@@ -223,7 +226,36 @@ async function listChannelVideos(keys, channelId, { maxCount, publishedAfter } =
       continue;
     }
   }
-  return out;
+  // 조회수 조회
+  try {
+    const ids = all.map(v => v.id);
+    for (let i = 0; i < ids.length; i += 50) {
+      if (ABORT) break;
+      const batch = ids.slice(i, i + 50);
+      const key = rotateKey();
+      const vurl = buildUrl('https://www.googleapis.com/youtube/v3/videos', {
+        part: 'statistics',
+        id: batch.join(','),
+        key
+      });
+      try {
+        const j = await ytFetch(vurl);
+        const items = Array.isArray(j.items) ? j.items : [];
+        const viewsMap = new Map(items.map(it => [it.id, Number(it.statistics?.viewCount || 0)]));
+        for (const v of all) {
+          if (viewsMap.has(v.id)) v.views = viewsMap.get(v.id) || 0;
+        }
+      } catch (e) {
+        log(`[list] views 오류: ${e?.message || e}`);
+      }
+      await new Promise(r => setTimeout(r, 120 + Math.random()*120));
+    }
+  } catch (e) {
+    log(`[list] 조회수 조회 실패: ${e?.message || e}`);
+  }
+  // 필터 적용
+  const filtered = (minViews ? all.filter(v => (v.views || 0) >= minViews) : all);
+  return filtered;
 }
 
 async function fetchTranscriptByUrl(serverBase, youtubeUrl, useStt) {
@@ -336,10 +368,12 @@ btnList?.addEventListener('click', async () => {
     }
     const maxCount = Math.max(0, Number(maxVideosInput.value || 0)) || undefined;
     const after = (afterDateInput.value || '').trim() || undefined;
-    VIDEOS = await listChannelVideos(ALL_KEYS, RESOLVED_CHANNEL.id, { maxCount, publishedAfter: after });
-    setStatus('영상 목록 완료', `${VIDEOS.length}개`);
+    const before = (beforeDateInput?.value || '').trim() || undefined;
+    const minViews = Math.max(0, Number(minViewsInput?.value || 0)) || undefined;
+    VIDEOS = await listChannelVideos(ALL_KEYS, RESOLVED_CHANNEL.id, { maxCount, publishedAfter: after, publishedBefore: before, minViews });
+    setStatus('영상 목록 완료', `${VIDEOS.length}개${minViews ? ' (필터 적용)' : ''}`);
     setProgress(0, VIDEOS.length);
-    log(`[list] 영상 ${VIDEOS.length}개`);
+    log(`[list] 영상 ${VIDEOS.length}개${minViews ? ` (최소 조회수 ${minViews} 이상)` : ''}`);
   } catch (e) {
     setStatus('영상 목록 실패', e?.message || String(e));
     log('[list] 실패: ' + (e?.message || e));
