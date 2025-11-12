@@ -80,11 +80,21 @@
             </select>
           </div>
         </div>
-        <div class="row" style="margin-top:12px;">
+        <div class="row-3" style="margin-top:12px;">
           <div>
             <label class="label">게시일 기준 (이 날짜 이후만)</label>
             <input id="after-date" type="date" class="input">
           </div>
+          <div>
+            <label class="label">게시일 기준 (이 날짜 이전만)</label>
+            <input id="before-date" type="date" class="input">
+          </div>
+          <div>
+            <label class="label">최소 조회수</label>
+            <input id="min-views" type="number" class="input" placeholder="예: 30000" min="0">
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px;">
           <div class="flex" style="align-items:flex-end; gap:8px;">
             <button id="resolve-ch" class="btn">채널 확인</button>
             <button id="list-videos" class="btn">영상 목록 불러오기</button>
