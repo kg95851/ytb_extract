@@ -39,6 +39,14 @@ let STARTED_AT = 0;
 let SUCC = 0;
 let FAIL = 0;
 
+function safeDecode(s) {
+  try {
+    return decodeURIComponent(String(s || ''));
+  } catch {
+    return String(s || '');
+  }
+}
+
 function log(line) {
   const t = new Date().toLocaleTimeString();
   logEl.textContent += `[${t}] ${line}\n`;
@@ -98,12 +106,13 @@ function rotateKey() {
 }
 
 function parseChannelInput(raw) {
-  const s = String(raw || '').trim();
+  const rawStr = String(raw || '').trim();
+  const s = safeDecode(rawStr);
   if (!s) return { type: 'unknown', value: '' };
   // direct channel id
   if (/^UC[A-Za-z0-9_-]{20,}$/.test(s)) return { type: 'channelId', value: s };
   // @handle
-  if (s.startsWith('@')) return { type: 'handle', value: s.replace(/^@/, '') };
+  if (s.startsWith('@')) return { type: 'handle', value: safeDecode(s.replace(/^@/, '')) };
   try {
     const u = new URL(s);
     if (u.hostname.includes('youtube.com') || u.hostname.includes('youtu.be')) {
@@ -112,11 +121,11 @@ function parseChannelInput(raw) {
       if (m) return { type: 'channelId', value: m[1] };
       // /@handle
       const m2 = u.pathname.match(/\/@([^\/]+)/);
-      if (m2) return { type: 'handle', value: m2[1] };
+      if (m2) return { type: 'handle', value: safeDecode(m2[1]) };
       // /user/xxx 또는 /c/xxx -> 검색 사용으로 해석
       const parts = u.pathname.split('/').filter(Boolean);
       if (parts[0] === 'user' || parts[0] === 'c') {
-        return { type: 'custom', value: parts[1] || '' };
+        return { type: 'custom', value: safeDecode(parts[1] || '') };
       }
     }
   } catch {}
@@ -155,30 +164,39 @@ async function resolveChannel(keys, inputRaw) {
     return { id: parsed.value, title: item.snippet?.title || '' };
   }
   // 2) @handle, custom, search 는 search API로 채널 먼저 찾기
-  const query = parsed.type === 'handle' ? '@' + parsed.value : parsed.value;
+  const variants = [];
+  if (parsed.type === 'handle') {
+    variants.push('@' + parsed.value);
+    variants.push(parsed.value);
+  } else {
+    variants.push(parsed.value);
+  }
   let pageToken = '';
-  for (let tries = 0; tries < 8; tries++) {
-    const key = rotateKey();
-    const url = buildUrl('https://www.googleapis.com/youtube/v3/search', {
-      part: 'snippet',
-      q: query,
-      type: 'channel',
-      maxResults: 5,
-      key,
-      pageToken
-    });
-    try {
-      const j = await ytFetch(url);
-      const item = (j.items || [])[0];
-      if (item && item.snippet) {
-        return { id: item.id?.channelId, title: item.snippet.title || '' };
+  for (const query of variants) {
+    pageToken = '';
+    for (let tries = 0; tries < 8; tries++) {
+      const key = rotateKey();
+      const url = buildUrl('https://www.googleapis.com/youtube/v3/search', {
+        part: 'snippet',
+        q: query,
+        type: 'channel',
+        maxResults: 5,
+        key,
+        pageToken
+      });
+      try {
+        const j = await ytFetch(url);
+        const item = (j.items || [])[0];
+        if (item && item.snippet) {
+          return { id: item.id?.channelId, title: item.snippet.title || '' };
+        }
+        pageToken = j.nextPageToken || '';
+        if (!pageToken) break;
+      } catch (e) {
+        // 쿼터/429 시 짧은 대기 후 재시도
+        await new Promise(r => setTimeout(r, 500 + Math.random()*500));
+        continue;
       }
-      pageToken = j.nextPageToken || '';
-      if (!pageToken) break;
-    } catch (e) {
-      // 쿼터/429 시 짧은 대기 후 재시도
-      await new Promise(r => setTimeout(r, 500 + Math.random()*500));
-      continue;
     }
   }
   throw new Error('채널 해석 실패');
