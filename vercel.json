@@ -2,10 +2,19 @@
   "version": 2,
   "builds": [
     { "src": "api/**/*.py", "use": "@vercel/python" },
-    { "src": "index.html", "use": "@vercel/static" }
+    { "src": "index.html", "use": "@vercel/static" },
+    { "src": "*.css", "use": "@vercel/static" },
+    { "src": "*.js", "use": "@vercel/static" },
+    { "src": "*.png", "use": "@vercel/static" },
+    { "src": "*.ico", "use": "@vercel/static" }
   ],
   "routes": [
     { "src": "/api/(.*)", "dest": "/api/$1.py" },
+
+    // ✅ CSS, JS, 이미지, 아이콘 등 정적 파일은 그대로 서빙
+    { "src": "/(.*)\\.(css|js|png|jpg|jpeg|gif|ico)", "dest": "/$1.$2" },
+
+    // ✅ 나머지는 index.html로 라우팅 (SPA 대응)
     { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
