@@ -34,6 +34,7 @@ let VIDEOS = []; // { id, title, publishedAt, url, views }
 let RESULTS = []; // { id, title, publishedAt, transcript, error }
 let ABORT = false;
 let RESOLVED_CHANNEL = null; // { id, title }
+let RESOLVED_CHANNELS = []; // [{ id, title }]
 let STARTED_AT = 0;
 let SUCC = 0;
 let FAIL = 0;
@@ -99,6 +100,12 @@ function updateSubStatus(processed, total) {
 
 function getKeysFromTextarea() {
   return (keysInput.value || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+}
+
+function getChannelsFromTextarea() {
+  const raw = String(chInput.value || '');
+  const lines = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  return lines;
 }
 
 function getServerBase() {
@@ -208,6 +215,24 @@ async function resolveChannel(keys, inputRaw) {
     }
   }
   throw new Error('채널 해석 실패');
+}
+
+async function resolveMultipleChannels(keys, inputs) {
+  const targets = Array.isArray(inputs) && inputs.length ? inputs : getChannelsFromTextarea();
+  if (!targets.length) throw new Error('채널 입력을 확인하세요.');
+  const resolved = [];
+  for (const one of targets) {
+    try {
+      const info = await resolveChannel(keys, one);
+      resolved.push(info);
+      log(`[resolve] 채널: ${info.title} (${info.id})`);
+    } catch (e) {
+      log(`[resolve] 실패: ${one} — ${e?.message || e}`);
+    }
+    await new Promise(r => setTimeout(r, 200 + Math.random()*200));
+  }
+  if (!resolved.length) throw new Error('채널 해석 실패');
+  return resolved;
 }
 
 async function listChannelVideos(keys, channelId, { maxCount, publishedAfter, publishedBefore, minViews } = {}) {
@@ -371,10 +396,10 @@ btnResolve?.addEventListener('click', async () => {
     ALL_KEYS = getKeysFromTextarea();
     if (!ALL_KEYS.length) throw new Error('YouTube API 키가 필요합니다.');
     KEY_INDEX = 0;
-    const info = await resolveChannel(ALL_KEYS, chInput.value);
-    RESOLVED_CHANNEL = info;
-    setStatus('채널 확인 완료', `${info.title} (${info.id})`);
-    log(`[resolve] 채널: ${info.title} (${info.id})`);
+    RESOLVED_CHANNELS = await resolveMultipleChannels(ALL_KEYS);
+    RESOLVED_CHANNEL = RESOLVED_CHANNELS[0] || null;
+    setStatus('채널 확인 완료', `${RESOLVED_CHANNELS.length}개 채널`);
+    log(`[resolve] 총 ${RESOLVED_CHANNELS.length}개 채널 확인`);
   } catch (e) {
     setStatus('채널 확인 실패', e?.message || String(e));
     log('[resolve] 실패: ' + (e?.message || e));
@@ -389,17 +414,28 @@ btnList?.addEventListener('click', async () => {
     ALL_KEYS = getKeysFromTextarea();
     if (!ALL_KEYS.length) throw new Error('YouTube API 키가 필요합니다.');
     KEY_INDEX = 0;
-    if (!RESOLVED_CHANNEL?.id) {
-      RESOLVED_CHANNEL = await resolveChannel(ALL_KEYS, chInput.value);
+    if (!RESOLVED_CHANNELS || RESOLVED_CHANNELS.length === 0) {
+      RESOLVED_CHANNELS = await resolveMultipleChannels(ALL_KEYS);
+      RESOLVED_CHANNEL = RESOLVED_CHANNELS[0] || null;
     }
     const maxCount = Math.max(0, Number(maxVideosInput.value || 0)) || undefined;
     const after = (SELECTED_AFTER || '').trim() || undefined;
     const before = (SELECTED_BEFORE || '').trim() || undefined;
     const minViews = Math.max(0, Number(minViewsInput?.value || 0)) || undefined;
-    VIDEOS = await listChannelVideos(ALL_KEYS, RESOLVED_CHANNEL.id, { maxCount, publishedAfter: after, publishedBefore: before, minViews });
-    setStatus('영상 목록 완료', `${VIDEOS.length}개${minViews ? ' (필터 적용)' : ''}`);
+    VIDEOS = [];
+    for (const ch of RESOLVED_CHANNELS) {
+      const vids = await listChannelVideos(ALL_KEYS, ch.id, { maxCount, publishedAfter: after, publishedBefore: before, minViews });
+      for (const v of vids) {
+        v.channelId = ch.id;
+        v.channelTitle = ch.title;
+      }
+      VIDEOS.push(...vids);
+      log(`[list] ${ch.title} (${ch.id}) — ${vids.length}개`);
+      await new Promise(r => setTimeout(r, 200 + Math.random()*200));
+    }
+    setStatus('영상 목록 완료', `총 ${VIDEOS.length}개 / 채널 ${RESOLVED_CHANNELS.length}개${minViews ? ' (필터 적용)' : ''}`);
     setProgress(0, VIDEOS.length);
-    log(`[list] 영상 ${VIDEOS.length}개${minViews ? ` (최소 조회수 ${minViews} 이상)` : ''}`);
+    log(`[list] 영상 총 ${VIDEOS.length}개${minViews ? ` (최소 조회수 ${minViews} 이상)` : ''}`);
   } catch (e) {
     setStatus('영상 목록 실패', e?.message || String(e));
     log('[list] 실패: ' + (e?.message || e));
@@ -429,13 +465,13 @@ btnStart?.addEventListener('click', async () => {
       if (ABORT) throw new Error('abort');
       try {
         const text = await fetchTranscriptByUrl(server, v.url, useStt);
-        RESULTS.push({ id: v.id, title: v.title, publishedAt: v.publishedAt, transcript: text });
+        RESULTS.push({ id: v.id, title: v.title, publishedAt: v.publishedAt, transcript: text, channelId: v.channelId, channelTitle: v.channelTitle });
         SUCC++;
-        log(`[ok] ${v.id} (${(text||'').length} chars)`);
+        log(`[ok] ${v.id} (${(text||'').length} chars)${v.channelTitle ? ' [' + v.channelTitle + ']' : ''}`);
       } catch (e) {
-        RESULTS.push({ id: v.id, title: v.title, publishedAt: v.publishedAt, error: (e?.message || String(e)) });
+        RESULTS.push({ id: v.id, title: v.title, publishedAt: v.publishedAt, error: (e?.message || String(e)), channelId: v.channelId, channelTitle: v.channelTitle });
         FAIL++;
-        log(`[fail] ${v.id} ${e?.message || e}`);
+        log(`[fail] ${v.id} ${e?.message || e}${v.channelTitle ? ' [' + v.channelTitle + ']' : ''}`);
       }
     };
 
@@ -472,7 +508,9 @@ btnStop?.addEventListener('click', () => {
 
 btnExport?.addEventListener('click', () => {
   if (!RESULTS.length) { alert('내보낼 데이터가 없습니다.'); return; }
-  const ch = RESOLVED_CHANNEL?.id || 'channel';
+  const ch = (Array.isArray(RESOLVED_CHANNELS) && RESOLVED_CHANNELS.length > 1)
+    ? 'multi'
+    : ((RESOLVED_CHANNELS && RESOLVED_CHANNELS[0]?.id) || RESOLVED_CHANNEL?.id || 'channel');
   exportJson(`transcripts_${ch}_${new Date().toISOString().slice(0,10)}.json`, RESULTS);
 });
 
@@ -482,10 +520,11 @@ function escapeHtml(s) {
 
 function buildPrintableHtml(channel, results) {
   const now = new Date();
+  const isMulti = Array.isArray(channel);
   const head = `
     <html lang="ko"><head>
       <meta charset="utf-8">
-      <title>Transcripts - ${escapeHtml(channel?.title || channel?.id || '')}</title>
+      <title>Transcripts - ${isMulti ? '여러 채널' : escapeHtml(channel?.title || channel?.id || '')}</title>
       <style>
         body { font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Pretendard,Apple SD Gothic Neo,Noto Sans KR,sans-serif; color: #111827; margin: 24px; }
         h1 { margin: 0 0 8px 0; }
@@ -501,13 +540,15 @@ function buildPrintableHtml(channel, results) {
         <button onclick="window.print()">인쇄/저장</button>
       </div>
       <h1>채널 대본 모음</h1>
-      <div class="muted">${escapeHtml(channel?.title || '')} (${escapeHtml(channel?.id || '')}) • 생성: ${now.toLocaleString('ko-KR')}</div>
+      ${isMulti
+        ? `<div class="muted">여러 채널(${channel.length}개) • 생성: ${now.toLocaleString('ko-KR')}</div>`
+        : `<div class="muted">${escapeHtml(channel?.title || '')} (${escapeHtml(channel?.id || '')}) • 생성: ${now.toLocaleString('ko-KR')}</div>`}
       <div class="muted">총 ${results.length}건 • 성공 ${results.filter(r=>r.transcript).length} • 실패 ${results.filter(r=>!r.transcript).length}</div>
       <hr>
   `;
   const body = results.map((r, idx) => {
     const header = `${idx+1}. ${escapeHtml(r.title || r.id)}`;
-    const meta = `ID: ${escapeHtml(r.id)} • 게시일: ${escapeHtml(r.publishedAt || '')}`;
+    const meta = `ID: ${escapeHtml(r.id)} • 게시일: ${escapeHtml(r.publishedAt || '')}${r.channelTitle ? ' • 채널: ' + escapeHtml(r.channelTitle) : ''}`;
     const content = r.transcript
       ? `<pre>${escapeHtml(r.transcript)}</pre>`
       : `<div class="muted">오류: ${escapeHtml(r.error || 'unknown')}</div>`;
