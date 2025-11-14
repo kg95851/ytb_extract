@@ -312,36 +312,127 @@ async function listChannelVideos(keys, channelId, { maxCount, publishedAfter, pu
 
 async function fetchTranscriptByUrl(serverBase, youtubeUrl, useStt) {
   const url = serverBase.replace(/\/$/, '') + '/transcript?url=' + encodeURIComponent(youtubeUrl) + '&lang=ko,en' + (useStt ? '&stt=1' : '');
-  const res = await fetch(url);
-  if (!res.ok) {
-    let reason = '';
-    try { const j = await res.json(); reason = j && j.error ? String(j.error) : ''; } catch {}
-    throw new Error('Transcript http ' + res.status + (reason ? (' ' + reason) : ''));
+  
+  // 타임아웃 설정 (30초)
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
+  
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    
+    if (!res.ok) {
+      let reason = '';
+      try { const j = await res.json(); reason = j && j.error ? String(j.error) : ''; } catch {}
+      throw new Error('Transcript http ' + res.status + (reason ? (' ' + reason) : ''));
+    }
+    const data = await res.json();
+    return data.text || '';
+  } catch (e) {
+    clearTimeout(timeoutId);
+    if (e.name === 'AbortError') {
+      throw new Error('요청 타임아웃 (30초 초과)');
+    }
+    throw e;
   }
-  const data = await res.json();
-  return data.text || '';
 }
 
 async function processInBatches(items, worker, { concurrency = 8, onProgress } = {}) {
   return await new Promise((resolve) => {
+    // 빈 배열 처리
+    if (!items || items.length === 0) {
+      console.log('[batch] 처리할 항목 없음');
+      return resolve({ done: 0, failed: 0 });
+    }
+    
     let i = 0, inFlight = 0, done = 0, failed = 0;
     const total = items.length;
+    let isResolved = false;
+    
+    // 디버깅용 로그와 완료 체크
+    const checkCompletion = () => {
+      if (isResolved) return;
+      
+      const processed = done + failed;
+      console.log(`[batch] 진행상황: ${processed}/${total}, inFlight: ${inFlight}, done: ${done}, failed: ${failed}`);
+      
+      if (ABORT) {
+        console.log('[batch] 중단됨');
+        isResolved = true;
+        return resolve({ done, failed, aborted: true });
+      }
+      
+      // 모든 작업이 완료되었는지 확인 (처리된 수가 total과 같고 진행중인 작업이 없을 때)
+      if (processed >= total && inFlight === 0) {
+        console.log('[batch] 모든 작업 완료!');
+        isResolved = true;
+        return resolve({ done, failed });
+      }
+      
+      // 마지막 항목까지 시작했고 진행중인 작업이 없는 경우 (예외 상황)
+      if (i >= total && inFlight === 0 && !isResolved) {
+        console.log('[batch] 완료 (예외 케이스)');
+        isResolved = true;
+        return resolve({ done, failed });
+      }
+    };
+    
     const pump = () => {
-      if (ABORT) return resolve({ done, failed, aborted: true });
-      if (done + failed >= total && inFlight === 0) return resolve({ done, failed });
+      // pump 시작 시 항상 완료 체크
+      checkCompletion();
+      if (isResolved) return;
+      
       while (inFlight < concurrency && i < total && !ABORT) {
         const idx = i++;
         const item = items[idx];
+        const itemId = item.id || idx;
+        
+        console.log(`[batch] 시작: ${itemId} (${idx + 1}/${total})`);
         inFlight++;
-        worker(item).then(() => { done++; }).catch(() => { failed++; }).finally(() => {
-          inFlight--;
-          if (typeof onProgress === 'function') {
-            try { onProgress({ processed: done + failed, total }); } catch {}
-          }
-          pump();
+        
+        // 타임아웃 ID를 저장하여 성공 시 취소 가능
+        let timeoutId;
+        const timeoutPromise = new Promise((_, reject) => {
+          timeoutId = setTimeout(() => reject(new Error('작업 타임아웃 (60초)')), 60000);
         });
+        
+        Promise.race([worker(item), timeoutPromise])
+          .then(() => {
+            clearTimeout(timeoutId);
+            done++;
+            console.log(`[batch] 성공: ${itemId} (완료: ${done}/${total})`);
+          })
+          .catch((e) => {
+            clearTimeout(timeoutId);
+            failed++;
+            console.log(`[batch] 실패: ${itemId} - ${e?.message || e} (실패: ${failed})`);
+          })
+          .finally(() => {
+            inFlight--;
+            console.log(`[batch] 작업 종료: ${itemId}, 남은 진행중: ${inFlight}`);
+            
+            if (typeof onProgress === 'function') {
+              try { onProgress({ processed: done + failed, total }); } catch {}
+            }
+            
+            // 작업 완료 후 항상 완료 체크
+            checkCompletion();
+            
+            // 아직 처리할 작업이 있거나 진행중인 작업이 있으면 pump 호출
+            if (!isResolved && (i < total || inFlight > 0)) {
+              pump();
+            }
+          });
+      }
+      
+      // 모든 작업이 시작된 후에도 한 번 더 완료 체크
+      if (i >= total && !isResolved) {
+        console.log('[batch] 모든 작업 시작됨, 대기중...');
+        checkCompletion();
       }
     };
+    
+    // 초기 실행
     pump();
   });
 }
@@ -464,15 +555,20 @@ btnStart?.addEventListener('click', async () => {
 
     const worker = async (v) => {
       if (ABORT) throw new Error('abort');
+      const startTime = Date.now();
       try {
+        log(`[처리 시작] ${v.id} - ${v.title}`);
         const text = await fetchTranscriptByUrl(server, v.url, useStt);
+        const elapsed = Math.round((Date.now() - startTime) / 1000);
         RESULTS.push({ id: v.id, title: v.title, publishedAt: v.publishedAt, transcript: text, channelId: v.channelId, channelTitle: v.channelTitle });
         SUCC++;
-        log(`[ok] ${v.id} (${(text||'').length} chars)${v.channelTitle ? ' [' + v.channelTitle + ']' : ''}`);
+        log(`[ok] ${v.id} (${(text||'').length} chars, ${elapsed}초)${v.channelTitle ? ' [' + v.channelTitle + ']' : ''}`);
       } catch (e) {
+        const elapsed = Math.round((Date.now() - startTime) / 1000);
         RESULTS.push({ id: v.id, title: v.title, publishedAt: v.publishedAt, error: (e?.message || String(e)), channelId: v.channelId, channelTitle: v.channelTitle });
         FAIL++;
-        log(`[fail] ${v.id} ${e?.message || e}${v.channelTitle ? ' [' + v.channelTitle + ']' : ''}`);
+        log(`[fail] ${v.id} - ${e?.message || e} (${elapsed}초)${v.channelTitle ? ' [' + v.channelTitle + ']' : ''}`);
+        throw e; // 에러를 다시 throw해야 processInBatches에서 제대로 처리됨
       }
     };
 
