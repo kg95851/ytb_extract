@@ -240,6 +240,26 @@ async function resolveMultipleChannels(keys, inputs) {
 async function listChannelVideos(keys, channelId, { maxCount, publishedAfter, publishedBefore, minViews } = {}) {
   const all = [];
   let pageToken = '';
+  
+  // 날짜 처리 개선 - 한국 시간 기준으로 정확하게 변환
+  let afterISO, beforeISO;
+  if (publishedAfter) {
+    // 시작일 00:00:00 KST
+    const afterDate = new Date(publishedAfter + 'T00:00:00+09:00');
+    afterISO = afterDate.toISOString();
+    log(`[list] 시작일: ${publishedAfter} → ${afterISO}`);
+  }
+  if (publishedBefore) {
+    // 종료일 23:59:59 KST (포함하기 위해 다음날로 설정)
+    const beforeDate = new Date(publishedBefore + 'T23:59:59+09:00');
+    beforeDate.setSeconds(beforeDate.getSeconds() + 1); // 다음날 00:00:00으로
+    beforeISO = beforeDate.toISOString();
+    log(`[list] 종료일: ${publishedBefore} → ${beforeISO}`);
+  }
+  
+  let totalFetched = 0;
+  let pageNum = 0;
+  
   while (true) {
     if (ABORT) break;
     const key = rotateKey();
@@ -251,26 +271,52 @@ async function listChannelVideos(keys, channelId, { maxCount, publishedAfter, pu
       maxResults: 50,
       key,
       pageToken,
-      publishedAfter: publishedAfter ? new Date(publishedAfter).toISOString() : undefined,
-      publishedBefore: publishedBefore ? new Date(publishedBefore).toISOString() : undefined
+      publishedAfter: afterISO,
+      publishedBefore: beforeISO
     });
+    
+    log(`[list] API 호출 ${++pageNum}페이지, pageToken: ${pageToken || 'none'}`);
     try {
       const j = await ytFetch(url);
       const items = Array.isArray(j.items) ? j.items : [];
+      totalFetched += items.length;
+      
+      log(`[list] ${items.length}개 가져옴 (누적: ${totalFetched}개)`);
+      
       for (const it of items) {
         const id = it.id?.videoId;
         if (!id) continue;
-        all.push({
+        
+        const videoData = {
           id,
           title: it.snippet?.title || '',
           publishedAt: it.snippet?.publishedAt || '',
           url: `https://www.youtube.com/watch?v=${id}`
-        });
+        };
+        
+        // 날짜 로그 (디버깅용)
+        const pubDate = new Date(videoData.publishedAt);
+        if (totalFetched <= 5 || (totalFetched % 10 === 0)) {
+          log(`[list] ${videoData.title} - ${pubDate.toLocaleDateString('ko-KR')}`);
+        }
+        
+        all.push(videoData);
         if (maxCount && all.length >= maxCount) break;
       }
-      if (maxCount && all.length >= maxCount) break;
+      
+      if (maxCount && all.length >= maxCount) {
+        log(`[list] 최대 개수 도달 (${maxCount}개)`);
+        break;
+      }
+      
       pageToken = j.nextPageToken || '';
-      if (!pageToken) break;
+      if (!pageToken) {
+        log(`[list] 더 이상 페이지 없음`);
+        break;
+      }
+      
+      log(`[list] 다음 페이지 토큰: ${pageToken.substring(0, 10)}...`);
+      
       // QPS 완화
       await new Promise(r => setTimeout(r, 120 + Math.random()*120));
     } catch (e) {
@@ -279,35 +325,62 @@ async function listChannelVideos(keys, channelId, { maxCount, publishedAfter, pu
       continue;
     }
   }
+  log(`[list] 총 ${all.length}개 영상 수집됨`);
+  
   // 조회수 조회
-  try {
-    const ids = all.map(v => v.id);
-    for (let i = 0; i < ids.length; i += 50) {
-      if (ABORT) break;
-      const batch = ids.slice(i, i + 50);
-      const key = rotateKey();
-      const vurl = buildUrl('https://www.googleapis.com/youtube/v3/videos', {
-        part: 'statistics',
-        id: batch.join(','),
-        key
-      });
-      try {
-        const j = await ytFetch(vurl);
-        const items = Array.isArray(j.items) ? j.items : [];
-        const viewsMap = new Map(items.map(it => [it.id, Number(it.statistics?.viewCount || 0)]));
-        for (const v of all) {
-          if (viewsMap.has(v.id)) v.views = viewsMap.get(v.id) || 0;
+  if (all.length > 0) {
+    log(`[list] 조회수 정보 가져오는 중...`);
+    try {
+      const ids = all.map(v => v.id);
+      let viewsFetched = 0;
+      
+      for (let i = 0; i < ids.length; i += 50) {
+        if (ABORT) break;
+        const batch = ids.slice(i, i + 50);
+        const key = rotateKey();
+        const vurl = buildUrl('https://www.googleapis.com/youtube/v3/videos', {
+          part: 'statistics',
+          id: batch.join(','),
+          key
+        });
+        try {
+          const j = await ytFetch(vurl);
+          const items = Array.isArray(j.items) ? j.items : [];
+          const viewsMap = new Map(items.map(it => [it.id, Number(it.statistics?.viewCount || 0)]));
+          for (const v of all) {
+            if (viewsMap.has(v.id)) {
+              v.views = viewsMap.get(v.id) || 0;
+              viewsFetched++;
+            }
+          }
+        } catch (e) {
+          log(`[list] views 오류: ${e?.message || e}`);
         }
-      } catch (e) {
-        log(`[list] views 오류: ${e?.message || e}`);
+        await new Promise(r => setTimeout(r, 120 + Math.random()*120));
       }
-      await new Promise(r => setTimeout(r, 120 + Math.random()*120));
+      log(`[list] ${viewsFetched}개 영상 조회수 확인`);
+    } catch (e) {
+      log(`[list] 조회수 조회 실패: ${e?.message || e}`);
     }
-  } catch (e) {
-    log(`[list] 조회수 조회 실패: ${e?.message || e}`);
   }
+  
   // 필터 적용
-  const filtered = (minViews ? all.filter(v => (v.views || 0) >= minViews) : all);
+  const beforeFilter = all.length;
+  const filtered = minViews ? all.filter(v => {
+    const pass = (v.views || 0) >= minViews;
+    if (!pass && v.views !== undefined) {
+      // 필터링된 영상 몇 개 로그
+      if (Math.random() < 0.1) { // 10% 샘플링
+        log(`[list] 필터됨: ${v.title} (${v.views?.toLocaleString()}회)`);
+      }
+    }
+    return pass;
+  }) : all;
+  
+  if (minViews && beforeFilter !== filtered.length) {
+    log(`[list] 조회수 필터 적용: ${beforeFilter}개 → ${filtered.length}개 (최소 ${minViews.toLocaleString()}회)`);
+  }
+  
   return filtered;
 }
 
