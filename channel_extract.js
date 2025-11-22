@@ -14,6 +14,7 @@ const maxVideosInput = document.getElementById('max-videos');
 const concInput = document.getElementById('conc-input');
 const sttInput = document.getElementById('stt-input');
 const minViewsInput = document.getElementById('min-views');
+const maxCommentsInput = document.getElementById('max-comments');
 const dateRangeInput = document.getElementById('date-range');
 const btnResolve = document.getElementById('resolve-ch');
 const btnList = document.getElementById('list-videos');
@@ -32,7 +33,7 @@ const logEl = document.getElementById('log');
 let ALL_KEYS = [];
 let KEY_INDEX = 0;
 let VIDEOS = []; // { id, title, publishedAt, url, views }
-let RESULTS = []; // { id, title, publishedAt, transcript, error }
+let RESULTS = []; // { id, title, publishedAt, transcript, comments, error }
 let ABORT = false;
 let RESOLVED_CHANNEL = null; // { id, title }
 let RESOLVED_CHANNELS = []; // [{ id, title }]
@@ -310,6 +311,45 @@ async function listChannelVideos(keys, channelId, { maxCount, publishedAfter, pu
   return filtered;
 }
 
+async function fetchComments(keys, videoId, maxCount = 10) {
+  if (!maxCount || maxCount <= 0) return [];
+  
+  try {
+    const key = rotateKey();
+    const url = buildUrl('https://www.googleapis.com/youtube/v3/commentThreads', {
+      part: 'snippet',
+      videoId,
+      maxResults: Math.min(100, maxCount * 2), // 좋아요 순으로 정렬하기 위해 더 많이 가져옴
+      order: 'relevance', // 관련성 높은 댓글 (좋아요 많은 것들 포함)
+      key
+    });
+    
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.log(`[comments] 댓글 조회 실패: ${videoId} - HTTP ${res.status}`);
+      return [];
+    }
+    
+    const data = await res.json();
+    const comments = (data.items || []).map(item => {
+      const topComment = item.snippet?.topLevelComment?.snippet;
+      return {
+        author: topComment?.authorDisplayName || '',
+        text: topComment?.textDisplay || topComment?.textOriginal || '',
+        likes: topComment?.likeCount || 0,
+        publishedAt: topComment?.publishedAt || ''
+      };
+    });
+    
+    // 좋아요 순으로 정렬하고 상위 N개만 선택
+    comments.sort((a, b) => b.likes - a.likes);
+    return comments.slice(0, maxCount);
+  } catch (e) {
+    console.log(`[comments] 오류: ${videoId} - ${e?.message || e}`);
+    return [];
+  }
+}
+
 async function fetchTranscriptByUrl(serverBase, youtubeUrl, useStt) {
   const url = serverBase.replace(/\/$/, '') + '/transcript?url=' + encodeURIComponent(youtubeUrl) + '&lang=ko,en' + (useStt ? '&stt=1' : '');
   
@@ -548,24 +588,47 @@ btnStart?.addEventListener('click', async () => {
     btnStart.disabled = true; btnStop.disabled = false;
     const server = getServerBase();
     const useStt = String(sttInput.value || '0') === '1';
+    const maxComments = Math.max(0, Number(maxCommentsInput?.value || 0));
     const conc = Math.max(1, Math.min(20, Number(concInput.value || 8)));
     setStatus('대본 추출 진행 중...', `${conc} 동시`);
     setProgress(0, VIDEOS.length);
-    log(`[run] ${VIDEOS.length}개, 동시성 ${conc}, STT=${useStt?'on':'off'}`);
+    log(`[run] ${VIDEOS.length}개, 동시성 ${conc}, STT=${useStt?'on':'off'}, 댓글=${maxComments||0}개`);
 
     const worker = async (v) => {
       if (ABORT) throw new Error('abort');
       const startTime = Date.now();
       try {
         log(`[처리 시작] ${v.id} - ${v.title}`);
-        const text = await fetchTranscriptByUrl(server, v.url, useStt);
+        
+        // 대본과 댓글을 병렬로 가져오기
+        const [text, comments] = await Promise.all([
+          fetchTranscriptByUrl(server, v.url, useStt),
+          maxComments > 0 ? fetchComments(ALL_KEYS, v.id, maxComments) : Promise.resolve([])
+        ]);
+        
         const elapsed = Math.round((Date.now() - startTime) / 1000);
-        RESULTS.push({ id: v.id, title: v.title, publishedAt: v.publishedAt, transcript: text, channelId: v.channelId, channelTitle: v.channelTitle });
+        RESULTS.push({ 
+          id: v.id, 
+          title: v.title, 
+          publishedAt: v.publishedAt, 
+          transcript: text,
+          comments: comments,
+          channelId: v.channelId, 
+          channelTitle: v.channelTitle 
+        });
         SUCC++;
-        log(`[ok] ${v.id} (${(text||'').length} chars, ${elapsed}초)${v.channelTitle ? ' [' + v.channelTitle + ']' : ''}`);
+        log(`[ok] ${v.id} (${(text||'').length} chars, ${comments.length} comments, ${elapsed}초)${v.channelTitle ? ' [' + v.channelTitle + ']' : ''}`);
       } catch (e) {
         const elapsed = Math.round((Date.now() - startTime) / 1000);
-        RESULTS.push({ id: v.id, title: v.title, publishedAt: v.publishedAt, error: (e?.message || String(e)), channelId: v.channelId, channelTitle: v.channelTitle });
+        RESULTS.push({ 
+          id: v.id, 
+          title: v.title, 
+          publishedAt: v.publishedAt, 
+          error: (e?.message || String(e)), 
+          comments: [],
+          channelId: v.channelId, 
+          channelTitle: v.channelTitle 
+        });
         FAIL++;
         log(`[fail] ${v.id} - ${e?.message || e} (${elapsed}초)${v.channelTitle ? ' [' + v.channelTitle + ']' : ''}`);
         throw e; // 에러를 다시 throw해야 processInBatches에서 제대로 처리됨
@@ -626,9 +689,14 @@ function buildPrintableHtml(channel, results) {
         body { font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Pretendard,Apple SD Gothic Neo,Noto Sans KR,sans-serif; color: #111827; margin: 24px; }
         h1 { margin: 0 0 8px 0; }
         h2 { margin: 16px 0 8px 0; }
+        h3 { margin: 12px 0 8px 0; font-size: 14px; color: #374151; }
         .muted { color: #6b7280; font-size: 12px; }
         .item { page-break-inside: avoid; margin: 16px 0; padding: 12px; border: 1px solid #e5e7eb; border-radius: 8px; }
         .meta { color: #374151; font-size: 12px; margin-bottom: 8px; }
+        .comments { margin-top: 16px; padding-top: 16px; border-top: 1px solid #e5e7eb; }
+        .comment { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
+        .comment-meta { color: #6b7280; font-size: 11px; margin-bottom: 4px; }
+        .comment-text { font-size: 13px; line-height: 1.5; }
         pre { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; line-height: 1.5; }
         @media print { .no-print { display:none; } }
       </style>
@@ -646,9 +714,32 @@ function buildPrintableHtml(channel, results) {
   const body = results.map((r, idx) => {
     const header = `${idx+1}. ${escapeHtml(r.title || r.id)}`;
     const meta = `ID: ${escapeHtml(r.id)} • 게시일: ${escapeHtml(r.publishedAt || '')}${r.channelTitle ? ' • 채널: ' + escapeHtml(r.channelTitle) : ''}`;
-    const content = r.transcript
+    
+    // 대본 내용
+    let content = r.transcript
       ? `<pre>${escapeHtml(r.transcript)}</pre>`
       : `<div class="muted">오류: ${escapeHtml(r.error || 'unknown')}</div>`;
+    
+    // 댓글 추가
+    if (r.comments && r.comments.length > 0) {
+      const commentsHtml = r.comments.map((c, cIdx) => {
+        const likes = c.likes > 0 ? `👍 ${c.likes.toLocaleString()}` : '';
+        return `
+          <div class="comment">
+            <div class="comment-meta">${cIdx + 1}. ${escapeHtml(c.author)} ${likes}</div>
+            <div class="comment-text">${escapeHtml(c.text)}</div>
+          </div>
+        `;
+      }).join('');
+      
+      content += `
+        <div class="comments">
+          <h3>댓글 (좋아요 상위 ${r.comments.length}개)</h3>
+          ${commentsHtml}
+        </div>
+      `;
+    }
+    
     return `<div class="item"><h2>${header}</h2><div class="meta">${meta}</div>${content}</div>`;
   }).join('\n');
   const tail = `</body></html>`;
