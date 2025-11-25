@@ -34,6 +34,9 @@ const subStatus = document.getElementById('sub-status');
 const countsLine = document.getElementById('counts-line');
 const progressBar = document.getElementById('progress-bar');
 const logEl = document.getElementById('log');
+const settingsPanel = document.getElementById('settings-panel');
+const toggleSettingsBtn = document.getElementById('toggle-settings');
+const closeSettingsBtn = document.getElementById('close-settings');
 
 // State
 let ALL_KEYS = [];
@@ -682,6 +685,8 @@ function saveLocal() {
   try {
     localStorage.setItem('ce_keys', keysInput.value || '');
     localStorage.setItem('ce_server', srvInput.value || '');
+    localStorage.setItem('ce_conc', concInput.value || '8');
+    localStorage.setItem('ce_stt', sttInput.value || '0');
   } catch {}
 }
 
@@ -689,12 +694,32 @@ function loadLocal() {
   try {
     const k = localStorage.getItem('ce_keys') || '';
     const s = localStorage.getItem('ce_server') || '';
+    const c = localStorage.getItem('ce_conc') || '8';
+    const stt = localStorage.getItem('ce_stt') || '0';
     if (k) keysInput.value = k;
     if (s) srvInput.value = s;
+    if (c) concInput.value = c;
+    if (stt) sttInput.value = stt;
   } catch {}
 }
 
+// 설정 패널 토글
+function toggleSettings(show) {
+  if (settingsPanel) {
+    settingsPanel.style.display = show ? '' : 'none';
+  }
+}
+
 // Events
+toggleSettingsBtn?.addEventListener('click', () => {
+  const isHidden = settingsPanel.style.display === 'none';
+  toggleSettings(isHidden);
+});
+
+closeSettingsBtn?.addEventListener('click', () => {
+  toggleSettings(false);
+});
+
 saveKeysBtn?.addEventListener('click', () => {
   saveLocal();
   keysStatus.textContent = '저장되었습니다.';
