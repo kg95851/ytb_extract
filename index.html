@@ -36,7 +36,45 @@
           <div class="muted">YouTube API 키 회전 + 서버(IP 회전 구성 시 자동 연동)</div>
         </div>
         <div class="flex">
+          <button id="toggle-settings" class="btn">⚙️ 설정</button>
           <a class="btn" href="./index.html">홈</a>
+        </div>
+      </div>
+
+      <!-- 설정 패널 (접힘) -->
+      <div id="settings-panel" class="card" style="display:none;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3 style="margin:0;font-size:14px;">⚙️ 설정</h3>
+          <button id="close-settings" class="btn" style="padding:4px 8px;font-size:12px;">닫기</button>
+        </div>
+        <div class="row">
+          <div>
+            <label class="label">Transcript 서버 주소</label>
+            <input id="srv-input" class="input" placeholder="예: /api (기본)" />
+            <div class="muted" style="margin-top:6px;">/api/transcript 로 호출됩니다. 로컬 서버 사용 시 http://localhost:8787</div>
+          </div>
+          <div class="row">
+            <div>
+              <label class="label">동시성 (대본 추출)</label>
+              <input id="conc-input" type="number" class="input" value="8" min="1" max="20">
+            </div>
+            <div>
+              <label class="label">STT Fallback</label>
+              <select id="stt-input" class="select">
+                <option value="0">사용 안 함</option>
+                <option value="1">사용</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:12px;">
+          <label class="label">YouTube API Keys (줄바꿈으로 여러 개)</label>
+          <textarea id="keys-input" class="textarea" placeholder="AIza...1&#10;AIza...2"></textarea>
+          <div class="flex" style="margin-top:8px;">
+            <button id="save-keys" class="btn">설정 저장</button>
+            <button id="test-key" class="btn">API 키 테스트</button>
+            <span id="keys-status" class="muted"></span>
+          </div>
         </div>
       </div>
 
@@ -47,33 +85,15 @@
           <button id="mode-video" class="btn" style="border-radius: 0 8px 8px 0; margin-left: -1px;">영상 URL 모드</button>
         </div>
         
-        <div class="row">
-          <div>
-            <!-- 채널 입력 (기본) -->
-            <div id="channel-input-wrap">
-              <label class="label">채널들 (줄바꿈으로 여러 개) — URL/ID/@handle</label>
-              <textarea id="ch-input" class="textarea" placeholder="한 줄에 하나씩 입력&#10;예: https://www.youtube.com/@zxc&#10;예: UCxxxxxxxxxxxxxxxxxxxxxx&#10;예: @영화미슐랭"></textarea>
-            </div>
-            <!-- 영상 URL 입력 (숨김) -->
-            <div id="video-input-wrap" style="display:none;">
-              <label class="label">영상 URL들 (줄바꿈으로 여러 개)</label>
-              <textarea id="video-input" class="textarea" placeholder="한 줄에 하나씩 입력&#10;예: https://www.youtube.com/watch?v=dQw4w9WgXcQ&#10;예: https://youtu.be/dQw4w9WgXcQ"></textarea>
-            </div>
-          </div>
-          <div>
-            <label class="label">Transcript 서버 주소</label>
-            <input id="srv-input" class="input" placeholder="예: /api (기본)" />
-            <div class="muted" style="margin-top:6px;">/api/transcript 로 호출됩니다. 로컬 서버 사용 시 http://localhost:8787</div>
-          </div>
+        <!-- 채널 입력 (기본) -->
+        <div id="channel-input-wrap">
+          <label class="label">채널들 (줄바꿈으로 여러 개) — URL/ID/@handle</label>
+          <textarea id="ch-input" class="textarea" placeholder="한 줄에 하나씩 입력&#10;예: https://www.youtube.com/@zxc&#10;예: UCxxxxxxxxxxxxxxxxxxxxxx&#10;예: @영화미슐랭"></textarea>
         </div>
-        <div style="margin-top:12px;">
-          <label class="label">YouTube API Keys (줄바꿈으로 여러 개)</label>
-          <textarea id="keys-input" class="textarea" placeholder="AIza...1&#10;AIza...2"></textarea>
-          <div class="flex" style="margin-top:8px;">
-            <button id="save-keys" class="btn">키 저장</button>
-            <button id="test-key" class="btn">테스트</button>
-            <span id="keys-status" class="muted"></span>
-          </div>
+        <!-- 영상 URL 입력 (숨김) -->
+        <div id="video-input-wrap" style="display:none;">
+          <label class="label">영상 URL들 (줄바꿈으로 여러 개)</label>
+          <textarea id="video-input" class="textarea" placeholder="한 줄에 하나씩 입력&#10;예: https://www.youtube.com/watch?v=dQw4w9WgXcQ&#10;예: https://youtu.be/dQw4w9WgXcQ"></textarea>
         </div>
       </div>
 
@@ -84,33 +104,20 @@
             <input id="max-videos" type="number" class="input" placeholder="예: 100">
           </div>
           <div>
-            <label class="label">동시성 (대본 추출)</label>
-            <input id="conc-input" type="number" class="input" value="8" min="1" max="20">
-          </div>
-          <div>
-            <label class="label">STT Fallback 사용</label>
-            <select id="stt-input" class="select">
-              <option value="0">사용 안 함</option>
-              <option value="1">사용</option>
-            </select>
-          </div>
-        </div>
-        <div class="row" style="margin-top:12px;">
-          <div>
             <label class="label">기간(캘린더 선택)</label>
             <input id="date-range" class="input" placeholder="YYYY-MM-DD ~ YYYY-MM-DD">
           </div>
-          <div></div>
-        </div>
-        <div class="row" style="margin-top:12px;">
           <div>
             <label class="label">최소 조회수</label>
             <input id="min-views" type="number" class="input" placeholder="예: 30000" min="0">
           </div>
+        </div>
+        <div class="row" style="margin-top:12px;">
           <div>
             <label class="label">댓글 수집 개수 (좋아요 상위 N개)</label>
             <input id="max-comments" type="number" class="input" placeholder="예: 10" min="0" max="100">
           </div>
+          <div></div>
         </div>
         <div class="row" style="margin-top:12px;">
           <div class="flex" style="align-items:flex-end; gap:8px;">
