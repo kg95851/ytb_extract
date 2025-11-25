@@ -41,10 +41,24 @@
       </div>
 
       <div class="card">
+        <!-- 모드 선택 탭 -->
+        <div class="flex" style="margin-bottom:12px; border-bottom: 1px solid var(--border); padding-bottom: 12px;">
+          <button id="mode-channel" class="btn btn-primary" style="border-radius: 8px 0 0 8px;">채널 모드</button>
+          <button id="mode-video" class="btn" style="border-radius: 0 8px 8px 0; margin-left: -1px;">영상 URL 모드</button>
+        </div>
+        
         <div class="row">
           <div>
-            <label class="label">채널들 (줄바꿈으로 여러 개) — URL/ID/@handle</label>
-            <textarea id="ch-input" class="textarea" placeholder="한 줄에 하나씩 입력&#10;예: https://www.youtube.com/@zxc&#10;예: UCxxxxxxxxxxxxxxxxxxxxxx&#10;예: @영화미슐랭"></textarea>
+            <!-- 채널 입력 (기본) -->
+            <div id="channel-input-wrap">
+              <label class="label">채널들 (줄바꿈으로 여러 개) — URL/ID/@handle</label>
+              <textarea id="ch-input" class="textarea" placeholder="한 줄에 하나씩 입력&#10;예: https://www.youtube.com/@zxc&#10;예: UCxxxxxxxxxxxxxxxxxxxxxx&#10;예: @영화미슐랭"></textarea>
+            </div>
+            <!-- 영상 URL 입력 (숨김) -->
+            <div id="video-input-wrap" style="display:none;">
+              <label class="label">영상 URL들 (줄바꿈으로 여러 개)</label>
+              <textarea id="video-input" class="textarea" placeholder="한 줄에 하나씩 입력&#10;예: https://www.youtube.com/watch?v=dQw4w9WgXcQ&#10;예: https://youtu.be/dQw4w9WgXcQ"></textarea>
+            </div>
           </div>
           <div>
             <label class="label">Transcript 서버 주소</label>
@@ -102,6 +116,7 @@
           <div class="flex" style="align-items:flex-end; gap:8px;">
             <button id="resolve-ch" class="btn">채널 확인</button>
             <button id="list-videos" class="btn">영상 목록 불러오기</button>
+            <button id="load-video-urls" class="btn" style="display:none;">영상 URL 불러오기</button>
             <button id="start" class="btn btn-primary">대본 추출 시작</button>
             <button id="stop" class="btn btn-danger">중단</button>
             <button id="export" class="btn">JSON 내보내기</button>
