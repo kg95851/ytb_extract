@@ -5,6 +5,11 @@
 
 // DOM
 const chInput = document.getElementById('ch-input');
+const videoInput = document.getElementById('video-input');
+const channelInputWrap = document.getElementById('channel-input-wrap');
+const videoInputWrap = document.getElementById('video-input-wrap');
+const modeChannelBtn = document.getElementById('mode-channel');
+const modeVideoBtn = document.getElementById('mode-video');
 const srvInput = document.getElementById('srv-input');
 const keysInput = document.getElementById('keys-input');
 const saveKeysBtn = document.getElementById('save-keys');
@@ -18,6 +23,7 @@ const maxCommentsInput = document.getElementById('max-comments');
 const dateRangeInput = document.getElementById('date-range');
 const btnResolve = document.getElementById('resolve-ch');
 const btnList = document.getElementById('list-videos');
+const btnLoadVideoUrls = document.getElementById('load-video-urls');
 const btnStart = document.getElementById('start');
 const btnStop = document.getElementById('stop');
 const btnExport = document.getElementById('export');
@@ -42,6 +48,7 @@ let SUCC = 0;
 let FAIL = 0;
 let SELECTED_AFTER = '';
 let SELECTED_BEFORE = '';
+let CURRENT_MODE = 'channel'; // 'channel' or 'video'
 
 function safeDecode(s) {
   try {
@@ -148,6 +155,119 @@ function parseChannelInput(raw) {
   } catch {}
   // 문자열 전체를 검색 쿼리로 사용
   return { type: 'search', value: s };
+}
+
+// 영상 URL에서 video ID 추출
+function parseVideoUrl(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  
+  // 직접 video ID (11자)
+  if (/^[A-Za-z0-9_-]{11}$/.test(s)) return s;
+  
+  try {
+    const u = new URL(s);
+    // youtube.com/watch?v=xxx
+    if (u.hostname.includes('youtube.com')) {
+      const v = u.searchParams.get('v');
+      if (v && /^[A-Za-z0-9_-]{11}$/.test(v)) return v;
+      // /shorts/xxx
+      const shortsMatch = u.pathname.match(/\/shorts\/([A-Za-z0-9_-]{11})/);
+      if (shortsMatch) return shortsMatch[1];
+      // /embed/xxx
+      const embedMatch = u.pathname.match(/\/embed\/([A-Za-z0-9_-]{11})/);
+      if (embedMatch) return embedMatch[1];
+      // /v/xxx
+      const vMatch = u.pathname.match(/\/v\/([A-Za-z0-9_-]{11})/);
+      if (vMatch) return vMatch[1];
+    }
+    // youtu.be/xxx
+    if (u.hostname === 'youtu.be') {
+      const id = u.pathname.replace(/^\//, '').split('/')[0];
+      if (/^[A-Za-z0-9_-]{11}$/.test(id)) return id;
+    }
+  } catch {}
+  
+  return null;
+}
+
+// 영상 URL 텍스트에서 모든 video ID 추출
+function getVideoUrlsFromTextarea() {
+  const raw = String(videoInput?.value || '');
+  const lines = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  const ids = [];
+  for (const line of lines) {
+    const id = parseVideoUrl(line);
+    if (id && !ids.includes(id)) {
+      ids.push(id);
+    }
+  }
+  return ids;
+}
+
+// 영상 정보 가져오기 (API)
+async function fetchVideoInfo(keys, videoIds) {
+  const results = [];
+  
+  for (let i = 0; i < videoIds.length; i += 50) {
+    if (ABORT) break;
+    const batch = videoIds.slice(i, i + 50);
+    const key = rotateKey();
+    const url = buildUrl('https://www.googleapis.com/youtube/v3/videos', {
+      part: 'snippet,statistics',
+      id: batch.join(','),
+      key
+    });
+    
+    try {
+      const j = await ytFetch(url);
+      const items = Array.isArray(j.items) ? j.items : [];
+      for (const it of items) {
+        results.push({
+          id: it.id,
+          title: it.snippet?.title || '',
+          publishedAt: it.snippet?.publishedAt || '',
+          url: `https://www.youtube.com/watch?v=${it.id}`,
+          views: Number(it.statistics?.viewCount || 0),
+          channelId: it.snippet?.channelId || '',
+          channelTitle: it.snippet?.channelTitle || ''
+        });
+      }
+    } catch (e) {
+      log(`[video] 영상 정보 조회 오류: ${e?.message || e}`);
+    }
+    
+    if (i + 50 < videoIds.length) {
+      await new Promise(r => setTimeout(r, 120 + Math.random()*120));
+    }
+  }
+  
+  return results;
+}
+
+// 모드 전환 함수
+function setMode(mode) {
+  CURRENT_MODE = mode;
+  
+  if (mode === 'channel') {
+    channelInputWrap.style.display = '';
+    videoInputWrap.style.display = 'none';
+    modeChannelBtn.classList.add('btn-primary');
+    modeVideoBtn.classList.remove('btn-primary');
+    btnResolve.style.display = '';
+    btnList.style.display = '';
+    btnLoadVideoUrls.style.display = 'none';
+  } else {
+    channelInputWrap.style.display = 'none';
+    videoInputWrap.style.display = '';
+    modeChannelBtn.classList.remove('btn-primary');
+    modeVideoBtn.classList.add('btn-primary');
+    btnResolve.style.display = 'none';
+    btnList.style.display = 'none';
+    btnLoadVideoUrls.style.display = '';
+  }
+  
+  log(`[mode] ${mode === 'channel' ? '채널' : '영상 URL'} 모드로 전환`);
 }
 
 async function ytFetch(url) {
@@ -647,11 +767,92 @@ btnList?.addEventListener('click', async () => {
   }
 });
 
+// 영상 URL 불러오기 버튼
+btnLoadVideoUrls?.addEventListener('click', async () => {
+  try {
+    setStatus('영상 URL 불러오는 중...');
+    log('[video-url] 시작');
+    ABORT = false;
+    
+    const videoIds = getVideoUrlsFromTextarea();
+    if (!videoIds.length) throw new Error('영상 URL을 입력하세요.');
+    
+    log(`[video-url] ${videoIds.length}개 영상 ID 파싱됨`);
+    
+    ALL_KEYS = getKeysFromTextarea();
+    KEY_INDEX = 0;
+    
+    // API 키가 있으면 영상 정보 조회, 없으면 기본 정보만
+    if (ALL_KEYS.length > 0) {
+      log('[video-url] API로 영상 정보 조회 중...');
+      VIDEOS = await fetchVideoInfo(ALL_KEYS, videoIds);
+      
+      // API에서 못 가져온 영상은 기본 정보로 추가
+      for (const id of videoIds) {
+        if (!VIDEOS.find(v => v.id === id)) {
+          VIDEOS.push({
+            id,
+            title: `영상 ${id}`,
+            publishedAt: '',
+            url: `https://www.youtube.com/watch?v=${id}`,
+            views: 0,
+            channelId: '',
+            channelTitle: ''
+          });
+          log(`[video-url] ${id} - API 조회 실패, 기본 정보 사용`);
+        }
+      }
+    } else {
+      // API 키 없이 기본 정보만
+      log('[video-url] API 키 없음 - 기본 정보만 사용');
+      VIDEOS = videoIds.map(id => ({
+        id,
+        title: `영상 ${id}`,
+        publishedAt: '',
+        url: `https://www.youtube.com/watch?v=${id}`,
+        views: 0,
+        channelId: '',
+        channelTitle: ''
+      }));
+    }
+    
+    // 채널 정보 수집 (PDF 내보내기용)
+    const channelMap = new Map();
+    for (const v of VIDEOS) {
+      if (v.channelId && !channelMap.has(v.channelId)) {
+        channelMap.set(v.channelId, { id: v.channelId, title: v.channelTitle });
+      }
+    }
+    RESOLVED_CHANNELS = Array.from(channelMap.values());
+    RESOLVED_CHANNEL = RESOLVED_CHANNELS[0] || null;
+    
+    setStatus('영상 목록 완료', `총 ${VIDEOS.length}개 영상`);
+    setProgress(0, VIDEOS.length);
+    
+    for (const v of VIDEOS) {
+      log(`[video-url] ${v.title} (${v.id})${v.channelTitle ? ' [' + v.channelTitle + ']' : ''}`);
+    }
+    
+    log(`[video-url] 총 ${VIDEOS.length}개 영상 준비 완료`);
+  } catch (e) {
+    setStatus('영상 URL 불러오기 실패', e?.message || String(e));
+    log('[video-url] 실패: ' + (e?.message || e));
+  }
+});
+
+// 모드 전환 버튼 이벤트
+modeChannelBtn?.addEventListener('click', () => setMode('channel'));
+modeVideoBtn?.addEventListener('click', () => setMode('video'));
+
 btnStart?.addEventListener('click', async () => {
   try {
     if (!VIDEOS.length) {
-      // 편의: 목록이 없으면 자동으로 불러오기
-      await btnList?.click();
+      // 편의: 목록이 없으면 모드에 따라 자동으로 불러오기
+      if (CURRENT_MODE === 'video') {
+        await btnLoadVideoUrls?.click();
+      } else {
+        await btnList?.click();
+      }
       if (!VIDEOS.length) return;
     }
     ABORT = false;
