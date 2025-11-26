@@ -507,6 +507,133 @@ async function listChannelVideos(keys, channelId, { maxCount, publishedAfter, pu
   return filtered;
 }
 
+// ========== 클라이언트 측 IndexedDB 캐시 ==========
+const CACHE_DB_NAME = 'TranscriptCache';
+const CACHE_STORE_NAME = 'transcripts';
+const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30일
+
+let _cacheDb = null;
+let _cacheStats = { hits: 0, misses: 0 };
+
+async function openCacheDb() {
+  if (_cacheDb) return _cacheDb;
+  
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(CACHE_DB_NAME, 1);
+    
+    request.onerror = () => {
+      console.log('[cache] IndexedDB 열기 실패');
+      resolve(null);
+    };
+    
+    request.onsuccess = () => {
+      _cacheDb = request.result;
+      resolve(_cacheDb);
+    };
+    
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains(CACHE_STORE_NAME)) {
+        const store = db.createObjectStore(CACHE_STORE_NAME, { keyPath: 'videoId' });
+        store.createIndex('timestamp', 'timestamp', { unique: false });
+      }
+    };
+  });
+}
+
+async function getCachedTranscript(videoId) {
+  try {
+    const db = await openCacheDb();
+    if (!db) return null;
+    
+    return new Promise((resolve) => {
+      const tx = db.transaction(CACHE_STORE_NAME, 'readonly');
+      const store = tx.objectStore(CACHE_STORE_NAME);
+      const request = store.get(videoId);
+      
+      request.onsuccess = () => {
+        const result = request.result;
+        if (result) {
+          // TTL 체크
+          const age = Date.now() - (result.timestamp || 0);
+          if (age < CACHE_TTL_MS) {
+            _cacheStats.hits++;
+            resolve(result.text);
+            return;
+          }
+        }
+        _cacheStats.misses++;
+        resolve(null);
+      };
+      
+      request.onerror = () => {
+        _cacheStats.misses++;
+        resolve(null);
+      };
+    });
+  } catch (e) {
+    console.log('[cache] 캐시 조회 오류:', e);
+    return null;
+  }
+}
+
+async function setCachedTranscript(videoId, text) {
+  try {
+    const db = await openCacheDb();
+    if (!db) return;
+    
+    const tx = db.transaction(CACHE_STORE_NAME, 'readwrite');
+    const store = tx.objectStore(CACHE_STORE_NAME);
+    
+    store.put({
+      videoId,
+      text,
+      timestamp: Date.now()
+    });
+  } catch (e) {
+    console.log('[cache] 캐시 저장 오류:', e);
+  }
+}
+
+async function clearExpiredCache() {
+  try {
+    const db = await openCacheDb();
+    if (!db) return;
+    
+    const tx = db.transaction(CACHE_STORE_NAME, 'readwrite');
+    const store = tx.objectStore(CACHE_STORE_NAME);
+    const index = store.index('timestamp');
+    const expireTime = Date.now() - CACHE_TTL_MS;
+    
+    const request = index.openCursor(IDBKeyRange.upperBound(expireTime));
+    request.onsuccess = (event) => {
+      const cursor = event.target.result;
+      if (cursor) {
+        store.delete(cursor.primaryKey);
+        cursor.continue();
+      }
+    };
+  } catch (e) {
+    console.log('[cache] 만료 캐시 정리 오류:', e);
+  }
+}
+
+function getCacheStats() {
+  const total = _cacheStats.hits + _cacheStats.misses;
+  const hitRate = total > 0 ? (_cacheStats.hits / total * 100).toFixed(1) : 0;
+  return {
+    hits: _cacheStats.hits,
+    misses: _cacheStats.misses,
+    total,
+    hitRate: `${hitRate}%`
+  };
+}
+
+// 페이지 로드 시 만료된 캐시 정리
+setTimeout(() => clearExpiredCache(), 5000);
+
+// ========== 댓글 및 대본 가져오기 ==========
+
 async function fetchComments(keys, videoId, maxCount = 10) {
   if (!maxCount || maxCount <= 0) return [];
   
@@ -546,7 +673,31 @@ async function fetchComments(keys, videoId, maxCount = 10) {
   }
 }
 
+// 영상 ID 추출 헬퍼
+function extractVideoId(youtubeUrl) {
+  try {
+    if (youtubeUrl.includes('watch?v=')) {
+      return youtubeUrl.split('watch?v=')[1].split('&')[0];
+    } else if (youtubeUrl.includes('youtu.be/')) {
+      return youtubeUrl.split('youtu.be/')[1].split('?')[0];
+    } else if (youtubeUrl.includes('/shorts/')) {
+      return youtubeUrl.split('/shorts/')[1].split('?')[0];
+    }
+  } catch {}
+  return youtubeUrl;
+}
+
 async function fetchTranscriptByUrl(serverBase, youtubeUrl, useStt) {
+  const videoId = extractVideoId(youtubeUrl);
+  
+  // 1. 클라이언트 캐시 확인
+  const cached = await getCachedTranscript(videoId);
+  if (cached) {
+    console.log(`[cache] 캐시 히트: ${videoId}`);
+    return cached;
+  }
+  
+  // 2. 서버에서 가져오기
   const url = serverBase.replace(/\/$/, '') + '/transcript?url=' + encodeURIComponent(youtubeUrl) + '&lang=ko,en' + (useStt ? '&stt=1' : '');
   
   // 타임아웃 설정 (30초)
@@ -563,7 +714,19 @@ async function fetchTranscriptByUrl(serverBase, youtubeUrl, useStt) {
       throw new Error('Transcript http ' + res.status + (reason ? (' ' + reason) : ''));
     }
     const data = await res.json();
-    return data.text || '';
+    const text = data.text || '';
+    
+    // 3. 성공 시 클라이언트 캐시에 저장
+    if (text) {
+      await setCachedTranscript(videoId, text);
+      if (data.cached) {
+        console.log(`[cache] 서버 캐시 히트: ${videoId}`);
+      } else {
+        console.log(`[cache] 새로 추출: ${videoId}`);
+      }
+    }
+    
+    return text;
   } catch (e) {
     clearTimeout(timeoutId);
     if (e.name === 'AbortError') {
@@ -949,8 +1112,10 @@ btnStart?.addEventListener('click', async () => {
       return;
     }
     const elapsed = fmtTime(Date.now() - STARTED_AT);
+    const cacheInfo = getCacheStats();
     setStatus('완료', `성공 ${SUCC}, 실패 ${FAIL}, 소요 ${elapsed}`);
     log('[run] 완료');
+    log(`[cache] 캐시 통계: 히트 ${cacheInfo.hits}, 미스 ${cacheInfo.misses} (히트율 ${cacheInfo.hitRate})`);
     btnStart.disabled = false; btnStop.disabled = true;
   } catch (e) {
     setStatus('실행 실패', e?.message || String(e));
