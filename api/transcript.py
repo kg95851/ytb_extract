@@ -1,10 +1,11 @@
 import json
 import re
 import os
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import time
 from collections import OrderedDict
 from flask import Flask, request, jsonify
+import hashlib
 
 try:
     from yt_dlp import YoutubeDL
@@ -15,6 +16,11 @@ try:
     import requests
 except Exception:
     requests = None
+
+try:
+    import redis
+except Exception:
+    redis = None
 
 try:
     # use public exports; avoid importing private module `_errors`
@@ -53,11 +59,87 @@ DEFAULT_HEADERS = {
 }
 
 # -------- Bandwidth-aware caching & toggles --------
-_CACHE_TTL_SEC = int(os.getenv('TRANSCRIPT_CACHE_TTL_SEC') or '86400')  # 24h
-_CACHE_MAX = int(os.getenv('TRANSCRIPT_CACHE_SIZE') or '500')
+_CACHE_TTL_SEC = int(os.getenv('TRANSCRIPT_CACHE_TTL_SEC') or '2592000')  # 30 days
+_CACHE_MAX = int(os.getenv('TRANSCRIPT_CACHE_SIZE') or '1000')
 _STT_FALLBACK_ENABLED = (os.getenv('STT_FALLBACK_ENABLED') or '0').strip() in ('1', 'true', 'yes')
 
+# Redis 설정
+_REDIS_URL = os.getenv('REDIS_URL')  # redis://user:pass@host:port/db
+_redis_client = None
+
+def _get_redis():
+    global _redis_client
+    if _redis_client is not None:
+        return _redis_client
+    if redis and _REDIS_URL:
+        try:
+            _redis_client = redis.from_url(_REDIS_URL, decode_responses=True)
+            _redis_client.ping()  # 연결 테스트
+            print("[cache] Redis 연결 성공")
+            return _redis_client
+        except Exception as e:
+            print(f"[cache] Redis 연결 실패: {e}")
+            _redis_client = False  # 실패 시 재시도 방지
+    return None
+
+# Supabase 설정 (Redis 없을 때 대안)
+_SUPABASE_URL = os.getenv('SUPABASE_URL')
+_SUPABASE_KEY = os.getenv('SUPABASE_SERVICE_KEY') or os.getenv('SUPABASE_ANON_KEY')
+
+def _supabase_cache_get(cache_key: str) -> Optional[Dict]:
+    """Supabase에서 캐시 조회"""
+    if not _SUPABASE_URL or not _SUPABASE_KEY or not requests:
+        return None
+    try:
+        url = f"{_SUPABASE_URL}/rest/v1/transcript_cache?cache_key=eq.{cache_key}&select=*"
+        resp = requests.get(url, headers={
+            'apikey': _SUPABASE_KEY,
+            'Authorization': f'Bearer {_SUPABASE_KEY}'
+        }, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and len(data) > 0:
+                row = data[0]
+                # TTL 체크
+                created_at = row.get('created_at', '')
+                if created_at:
+                    from datetime import datetime
+                    try:
+                        created = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        age = (datetime.now(created.tzinfo) - created).total_seconds()
+                        if age < _CACHE_TTL_SEC:
+                            return json.loads(row.get('data', '{}'))
+                    except:
+                        pass
+    except Exception as e:
+        print(f"[cache] Supabase get 오류: {e}")
+    return None
+
+def _supabase_cache_set(cache_key: str, data: Dict) -> bool:
+    """Supabase에 캐시 저장"""
+    if not _SUPABASE_URL or not _SUPABASE_KEY or not requests:
+        return False
+    try:
+        url = f"{_SUPABASE_URL}/rest/v1/transcript_cache"
+        payload = {
+            'cache_key': cache_key,
+            'video_id': cache_key.split('|')[0] if '|' in cache_key else cache_key,
+            'data': json.dumps(data),
+        }
+        # upsert
+        resp = requests.post(url, headers={
+            'apikey': _SUPABASE_KEY,
+            'Authorization': f'Bearer {_SUPABASE_KEY}',
+            'Content-Type': 'application/json',
+            'Prefer': 'resolution=merge-duplicates'
+        }, json=payload, timeout=5)
+        return resp.status_code in (200, 201)
+    except Exception as e:
+        print(f"[cache] Supabase set 오류: {e}")
+    return False
+
 class _LRUCache:
+    """인메모리 LRU 캐시 (1차 캐시)"""
     def __init__(self, cap: int):
         self.cap = max(1, cap)
         self.map: OrderedDict[str, Any] = OrderedDict()
@@ -65,7 +147,6 @@ class _LRUCache:
         if k not in self.map:
             return None
         v = self.map.pop(k)
-        # v = (ts, data)
         self.map[k] = v
         return v
     def set(self, k: str, v: Any):
@@ -75,7 +156,70 @@ class _LRUCache:
         while len(self.map) > self.cap:
             self.map.popitem(last=False)
 
-_cache = _LRUCache(_CACHE_MAX)
+_memory_cache = _LRUCache(_CACHE_MAX)
+
+def cache_get(cache_key: str) -> Optional[Dict]:
+    """
+    3단계 캐시 조회:
+    1. 인메모리 (가장 빠름)
+    2. Redis (빠름, 영구)
+    3. Supabase (느림, 영구)
+    """
+    # 1. 인메모리
+    cv = _memory_cache.get(cache_key)
+    if cv:
+        ts, data = cv
+        if (time.time() - ts) <= _CACHE_TTL_SEC:
+            return data
+    
+    # 2. Redis
+    r = _get_redis()
+    if r:
+        try:
+            cached = r.get(f"transcript:{cache_key}")
+            if cached:
+                data = json.loads(cached)
+                # 인메모리에도 저장
+                _memory_cache.set(cache_key, (time.time(), data))
+                return data
+        except Exception as e:
+            print(f"[cache] Redis get 오류: {e}")
+    
+    # 3. Supabase
+    data = _supabase_cache_get(cache_key)
+    if data:
+        # 상위 캐시에도 저장
+        _memory_cache.set(cache_key, (time.time(), data))
+        if r:
+            try:
+                r.setex(f"transcript:{cache_key}", _CACHE_TTL_SEC, json.dumps(data))
+            except:
+                pass
+        return data
+    
+    return None
+
+def cache_set(cache_key: str, data: Dict):
+    """
+    3단계 캐시 저장:
+    모든 레이어에 저장
+    """
+    # 1. 인메모리
+    _memory_cache.set(cache_key, (time.time(), data))
+    
+    # 2. Redis (비동기적으로 저장 시도)
+    r = _get_redis()
+    if r:
+        try:
+            r.setex(f"transcript:{cache_key}", _CACHE_TTL_SEC, json.dumps(data))
+        except Exception as e:
+            print(f"[cache] Redis set 오류: {e}")
+    
+    # 3. Supabase (비동기적으로 저장 시도)
+    _supabase_cache_set(cache_key, data)
+
+# 캐시 통계
+_cache_stats = {'hits': 0, 'misses': 0}
 
 def _pick_audio_url(info: Dict[str, Any]) -> str:
     try:
@@ -220,11 +364,15 @@ def transcript_root():
 
         # Cache key: (vid|langs)
         cache_key = f"{vid}|{','.join(preferred_langs)}"
-        cv = _cache.get(cache_key)
-        if cv:
-            ts, data = cv
-            if (time.time() - ts) <= _CACHE_TTL_SEC:
-                return jsonify(data), 200
+        
+        # 캐시 조회 (3단계: 인메모리 → Redis → Supabase)
+        cached_data = cache_get(cache_key)
+        if cached_data:
+            _cache_stats['hits'] += 1
+            cached_data['cached'] = True  # 캐시에서 반환됨을 표시
+            return jsonify(cached_data), 200
+        
+        _cache_stats['misses'] += 1
 
         # Initialize YouTubeTranscriptApi with proxy if available
         proxy_config = None
@@ -295,9 +443,11 @@ def transcript_root():
                 payload = {
                     'text': text,
                     'lang': getattr(fetched, 'language_code', None),
-                    'ext': 'transcript' if fetched else 'stt'
+                    'ext': 'transcript' if fetched else 'stt',
+                    'cached': False
                 }
-                _cache.set(cache_key, (time.time(), payload))
+                # 3단계 캐시에 저장
+                cache_set(cache_key, payload)
                 return jsonify(payload), 200
             else:
                 # choose best error message
@@ -321,6 +471,22 @@ def health():
 @app.route('/api/transcript/health', methods=['GET'])
 def health_alias():
     return ('ok', 200)
+
+@app.route('/cache/stats', methods=['GET'])
+@app.route('/api/transcript/cache/stats', methods=['GET'])
+def cache_stats():
+    """캐시 통계 반환"""
+    total = _cache_stats['hits'] + _cache_stats['misses']
+    hit_rate = (_cache_stats['hits'] / total * 100) if total > 0 else 0
+    return jsonify({
+        'hits': _cache_stats['hits'],
+        'misses': _cache_stats['misses'],
+        'total': total,
+        'hit_rate': f"{hit_rate:.1f}%",
+        'memory_cache_size': len(_memory_cache.map),
+        'redis_connected': _get_redis() is not None,
+        'supabase_configured': bool(_SUPABASE_URL and _SUPABASE_KEY)
+    }), 200
 
 
 if __name__ == '__main__':
